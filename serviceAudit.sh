@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # -------------------------------------------------
 # service_audit.sh — Audit running services/processes
 # -------------------------------------------------
@@ -10,7 +10,7 @@ RESET="\e[0m"
 
 echo -e "${YELLOW}[*] Starting service and process audit...${RESET}\n"
 
-# 1️⃣ List active services
+#List active services
 echo -e "${GREEN}--- Running systemd services ---${RESET}"
 sudo systemctl list-units --type=service --state=running --no-pager | awk '{print $1}' | tail -n +2 | grep -v "UNIT" > /tmp/services.txt
 
@@ -22,36 +22,23 @@ if [[ "$svc" =~ (ssh|systemd|dbus|cron|NetworkManager|rsyslog|polkit|nginx|apach
     fi
 done < /tmp/services.txt
 
-# 2️⃣ Check processes for suspicious names or paths
-echo -e "\n${GREEN}--- Checking running processes ---${RESET}"
-sudo ps -eo pid,user,comm,args --sort=-%mem | head -n 20 | while read -r line; do
-    if echo "$line" | grep -Eiq 'nc|ncat|socat|bash -i|/dev/tcp|curl|wget|perl|python|ruby'; then
-        echo -e "${RED}Suspicious process:${RESET} $line"
-    elif echo "$line" | grep -Eiq '/tmp/|/dev/shm/'; then
-        echo -e "${YELLOW}Process running from temp dir:${RESET} $line"
-    fi
-done
+KNOWN='^(ssh|sshd|cron|dbus|rsyslog|NetworkManager|polkit|nginx|apache3|ufw|console-getty|getty@[a-z0-9]+|user@[0-9]+|systemd-[a-z-]+)\.service$'
 
-# 3️⃣ Show open ports
-echo -e "\n${GREEN}--- Open listening ports ---${RESET}"
-sudo ss -tuln | awk 'NR>1 {print $1, $5}' | while read -r proto addr; do
-    port=$(echo "$addr" | awk -F':' '{print $NF}')
-    if [[ "$port" =~ ^(22|80|443|3306|5432)$ ]]; then
-        echo -e "${GREEN}[OK]${RESET} $proto port $port"
+while read -r svc; do
+    if [[ $svc =~ $KNOWN ]]; then
+        printf '%b[OK]%b %s\n' "$GREEN" "$RESET" "$svc"
     else
-        echo -e "${RED}Unusual open port:${RESET} $proto port $port"
+        printf '%b[?] Uncommon service:%b %s\n' "$RED" "$RESET" "$svc"
     fi
-done
+done < <(systemctl list-units --type=service --state=running \
+            --no-legend --plain --no-pager | awk '{print $1}')
 
-# 4️⃣ Check enabled-on-boot services
-echo -e "\n${GREEN}--- Enabled-on-boot services ---${RESET}"
-sudo systemctl list-unit-files --type=service --no-pager | grep enabled | while read -r line; do
-    if echo "$line" | grep -Eq 'ssh|network|firewalld|ufw|rsyslog|systemd|cron|nginx|apache|mysql|postgres'; then
-        echo -e "${GREEN}[OK]${RESET} $line"
-    else
-        echo -e "${YELLOW}[?] May not need on boot:${RESET} $line"
-    fi
-done
-
-echo -e "\n${GREEN}Audit complete.${RESET}"
-echo -e "Review red or yellow lines for potential issues.\n"
+while read -r proto addr; do
+    port=${addr##*:}     # strip everything up to the last colon
+    host=${addr%:*}      # strip the last colon and the port
+    case $host in
+        127.*|\[::1\]|*%lo) scope="local only" ;;
+        *)                  scope="EXPOSED" ;;
+    esac
+    printf '%s port %s (%s, bound to %s)\n' "$proto" "$port" "$scope" "$host"
+done < <(ss -tuln | awk 'NR>1 {print $1, $5}')

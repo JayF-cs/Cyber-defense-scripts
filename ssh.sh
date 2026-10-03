@@ -1,9 +1,9 @@
-#!/usr/bin/env bash
+#!/bin/bash
 
 set -euo pipefail
 IFS=$'\n\t'
 
-PROTECTED_USERS=("debian" "jmoney" "plinktern") # <---- Change this as need
+PROTECTED_USERS=("jmoney" "plinktern") # <---- Change this as need
 
 if [ "$(id -u)" -ne 0 ]; then
     echo "Must be run as root"
@@ -17,20 +17,25 @@ fi
 echo "[*] Removing existing authorized_keys for non-protected users..."
 
 # Always delete root's keys since PermitRootLogin is set to 'no' later
-sudo rm -f /root/.ssh/authorized_keys
+rm -f /root/.ssh/authorized_keys
 echo "[*] Cleared /root/.ssh/authorized_keys (PermitRootLogin is 'no')."
 
 for userdir in /home/*; do
     if [ -d "$userdir/.ssh" ]; then
         username=$(basename "$userdir")
 
-        # Check if the current user is in the protected list
-        if [[ " ${PROTECTED_USERS[@]} " =~ " ${username} " ]]; then
-            echo "SKIPPING: $username is a protected user. Keys retained."
+        is_protected() {
+            local u
+            for u in "${PROTECTED_USERS[@]}"; do
+                [[ "$u" == "$1" ]] && return 0
+            done
+            return 1
+        }
+
+        if is_protected "$username"; then
+            echo "SKIPPING: $username"
         else
-            # Delete keys for all other (non-protected) users
-            sudo rm -f "$userdir/.ssh/authorized_keys"
-            echo "Cleared $userdir/.ssh/authorized_keys"
+            rm -f "$userdir/.ssh/authorized_keys"
         fi
     fi
 done
@@ -41,12 +46,12 @@ done
 HARDEN_CONF="/etc/ssh/sshd_config.d/10-hardening.conf"
 echo "Creating hardened SSH config at $HARDEN_CONF..."
 
-sudo mkdir -p /etc/ssh/sshd_config.d
+mkdir -p /etc/ssh/sshd_config.d
 
 # Join the array of protected users into a space-separated string for AllowUsers
-ALLOWED_USERS_LIST="${PROTECTED_USERS[*]}"
+ALLOWED_USERS_LIST=$(IFS=' '; echo "${PROTECTED_USERST[*]}")
 
-sudo tee "$HARDEN_CONF" > /dev/null <<EOF
+tee "$HARDEN_CONF" > /dev/null <<EOF
 # SSH Hardening for Horse Plinko
 PermitRootLogin no
 MaxAuthTries 3
@@ -74,8 +79,7 @@ echo "[*] Hardened SSH config written."
 # 3. Test SSH config before restart
 # -----------------------------
 echo "Testing SSH configuration..."
-sudo sshd -t
-if [ $? -eq 0 ]; then
+if ! sshd -t; then
     echo "SSH config syntax OK."
 else
     echo "SSH config has errors. Fix before restart!"
@@ -87,9 +91,9 @@ fi
 # -----------------------------
 echo "Restarting SSH service..."
 if systemctl list-units --type=service | grep -q sshd; then
-    sudo systemctl restart sshd
+    systemctl restart sshd
 else
-    sudo systemctl restart ssh
+    systemctl restart ssh
 fi
 
 echo "SSH hardening complete."
